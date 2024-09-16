@@ -193,7 +193,7 @@ jobs:
           # Run appdmg to create the .dmg
           cd packaging && appdmg dmg.json "${{ env.ARTIFACT_NAME}}.dmg"
           codesign -s "${{ secrets.DEVELOPER_ID_APPLICATION}}" --timestamp -i ${{ env.BUNDLE_ID }} --force "${{ env.ARTIFACT_NAME }}.dmg"
-          xcrun notarytool submit "${{ env.ARTIFACT_NAME }}.dmg" --apple-id ${{ secrets.NOTARIZATION_USERNAME }} --password ${{ secrets.NOTARIZATION_PASSWORD }} --team-id ${{ secrets.TEAM_ID }} --wait
+          # xcrun notarytool submit "${{ env.ARTIFACT_NAME }}.dmg" --apple-id ${{ secrets.NOTARIZATION_USERNAME }} --password ${{ secrets.NOTARIZATION_PASSWORD }} --team-id ${{ secrets.TEAM_ID }} --wait
           xcrun stapler staple "${{ env.ARTIFACT_NAME }}.dmg"
 
       - name: Zip
@@ -207,31 +207,31 @@ jobs:
           iscc "packaging\installer.iss"
           mv "packaging/Output/${{ env.ARTIFACT_NAME }}.exe" "${{ env.ARTIFACTS_PATH }}/"
 
-      - name: Codesign with Azure Trusted Signing
-        if: ${{ matrix.name == 'Windows' }}
-        uses: azure/trusted-signing-action@v0.3.18
-        with:
-          # The Azure Active Directory tenant (directory) ID.
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      # - name: Codesign with Azure Trusted Signing
+      #   if: ${{ matrix.name == 'Windows' }}
+      #   uses: azure/trusted-signing-action@v0.3.18
+      #   with:
+      #     # The Azure Active Directory tenant (directory) ID.
+      #     azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
 
-          # The client (application) ID of an App Registration in the tenant.
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      #     # The client (application) ID of an App Registration in the tenant.
+      #     azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
 
-          # A client secret that was generated for the App Registration.
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+      #     # A client secret that was generated for the App Registration.
+      #     azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
-          # The Code Signing Account endpoint. The URI value must have a URI that aligns to the region your Code Signing Account and Certificate Profile you are specifying were created in during the setup of these resources.
-          endpoint: ${{ secrets.AZURE_ENDPOINT }}
+      #     # The Code Signing Account endpoint. The URI value must have a URI that aligns to the region your Code Signing Account and Certificate Profile you are specifying were created in during the setup of these resources.
+      #     endpoint: ${{ secrets.AZURE_ENDPOINT }}
 
-          # The Code Signing Account name.
-          trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_NAME }}
+      #     # The Code Signing Account name.
+      #     trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_NAME }}
 
-          # The Certificate Profile name.
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
+      #     # The Certificate Profile name.
+      #     certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
 
-          # This signs all exes inside the folder
-          files-folder: ${{ env.ARTIFACTS_PATH }}
-          files-folder-filter: exe
+      #     # This signs all exes inside the folder
+      #     files-folder: ${{ env.ARTIFACTS_PATH }}
+      #     files-folder-filter: exe
 
       - name: Upload Exe (Windows)
         if: ${{ matrix.name == 'Windows' }}
