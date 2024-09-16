@@ -265,6 +265,8 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         with:
           prerelease: true
           # download-artifact puts these files in their own dirs...
