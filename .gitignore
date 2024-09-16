@@ -17,6 +17,10 @@ Builds/*
 # This should never exist
 Install/*
 
+build/
+.vs
+.vscode
+
 # Running CTest makes a bunch o junk
 Testing
 

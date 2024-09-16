@@ -3,15 +3,26 @@
 
 //==============================================================================
 PluginProcessor::PluginProcessor()
-     : AudioProcessor (BusesProperties()
-                     #if ! JucePlugin_IsMidiEffect
-                      #if ! JucePlugin_IsSynth
-                       .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-                      #endif
-                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-                     #endif
-                       )
+    : AudioProcessor (BusesProperties()
+#if !JucePlugin_IsMidiEffect
+    #if !JucePlugin_IsSynth
+                          .withInput ("Input", juce::AudioChannelSet::stereo(), true)
+    #endif
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
+#endif
+              ),
+      parameters (*this, nullptr, "Parameters", createParameterLayout())
 {
+    wet_gain = static_cast<juce::AudioParameterFloat*> (parameters.getParameter ("wet_gain"));
+    dry_gain = static_cast<juce::AudioParameterFloat*> (parameters.getParameter ("dry_gain"));
+    crush = static_cast<juce::AudioParameterChoice*> (parameters.getParameter ("crush"));
+    preset = static_cast<juce::AudioParameterChoice*> (parameters.getParameter ("preset"));
+
+    lastLoadedPreset = -1;
+    lastCrush = 0;
+
+
+    verb_.init (48000);
 }
 
 PluginProcessor::~PluginProcessor()
@@ -19,6 +30,18 @@ PluginProcessor::~PluginProcessor()
 }
 
 //==============================================================================
+juce::AudioProcessorValueTreeState::ParameterLayout PluginProcessor::createParameterLayout()
+{
+    std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("wet_gain", "Wet Gain", 0.0f, 1.0f, 0.5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("dry_gain", "Dry Gain", 0.0f, 1.0f, 0.5f));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>("preset", "Preset", juce::StringArray{ "Preset 1", "Preset 2", "Preset 3", "Preset 4", "Preset 5", "Preset 6", "Preset 7", "Preset 8", "Preset 9", "Preset 10" }, 0));
+    params.push_back (std::make_unique<juce::AudioParameterChoice> ("crush", "Crush", juce::StringArray { "Hi Def", "OG", "Crushed", "Scrunted" }, 0));
+
+    return { params.begin(), params.end() };
+}
+
 const juce::String PluginProcessor::getName() const
 {
     return JucePlugin_Name;
@@ -26,29 +49,29 @@ const juce::String PluginProcessor::getName() const
 
 bool PluginProcessor::acceptsMidi() const
 {
-   #if JucePlugin_WantsMidiInput
+#if JucePlugin_WantsMidiInput
     return true;
-   #else
+#else
     return false;
-   #endif
+#endif
 }
 
 bool PluginProcessor::producesMidi() const
 {
-   #if JucePlugin_ProducesMidiOutput
+#if JucePlugin_ProducesMidiOutput
     return true;
-   #else
+#else
     return false;
-   #endif
+#endif
 }
 
 bool PluginProcessor::isMidiEffect() const
 {
-   #if JucePlugin_IsMidiEffect
+#if JucePlugin_IsMidiEffect
     return true;
-   #else
+#else
     return false;
-   #endif
+#endif
 }
 
 double PluginProcessor::getTailLengthSeconds() const
@@ -58,8 +81,8 @@ double PluginProcessor::getTailLengthSeconds() const
 
 int PluginProcessor::getNumPrograms()
 {
-    return 1;   // NB: some hosts don't cope very well if you tell them there are 0 programs,
-                // so this should be at least 1, even if you're not really implementing programs.
+    return 1; // NB: some hosts don't cope very well if you tell them there are 0 programs,
+        // so this should be at least 1, even if you're not really implementing programs.
 }
 
 int PluginProcessor::getCurrentProgram()
@@ -86,9 +109,8 @@ void PluginProcessor::changeProgramName (int index, const juce::String& newName)
 //==============================================================================
 void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
-    juce::ignoreUnused (sampleRate, samplesPerBlock);
+    verb_.init (sampleRate);
+    juce::ignoreUnused (samplesPerBlock);
 }
 
 void PluginProcessor::releaseResources()
@@ -99,55 +121,121 @@ void PluginProcessor::releaseResources()
 
 bool PluginProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-  #if JucePlugin_IsMidiEffect
+#if JucePlugin_IsMidiEffect
     juce::ignoreUnused (layouts);
     return true;
-  #else
+#else
     // This is the place where you check if the layout is supported.
     // In this template code we only support mono or stereo.
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
-     && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+        && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
         return false;
 
-    // This checks if the input layout matches the output layout
-   #if ! JucePlugin_IsSynth
+        // This checks if the input layout matches the output layout
+    #if !JucePlugin_IsSynth
     if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
         return false;
-   #endif
+    #endif
 
     return true;
-  #endif
+#endif
 }
 
-void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer,
-                                              juce::MidiBuffer& midiMessages)
+void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ignoreUnused (midiMessages);
-
     juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels  = getTotalNumInputChannels();
+    auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
+    // Ensure we have at least 2 output channels (stereo)
+    jassert (totalNumOutputChannels >= 2);
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
-    for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
+    verb_.setWetGain (wet_gain->get());
+    verb_.setDryGain (dry_gain->get());
+
+    // Handle preset changes
+    int currentPreset = preset->getIndex();
+    if (currentPreset != lastLoadedPreset)
+    {
+        verb_.setPreset (currentPreset);
+        lastLoadedPreset = currentPreset;
+    }
+
+    // Handle crush changes
+    int currentCrush = crush->getIndex();
+
+    // Clear any output channels beyond the first two
+    for (auto i = 2; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    float* leftChannel = buffer.getWritePointer (0);
+    float* rightChannel = buffer.getWritePointer (1);
+
+    // Apply downsampling if crush is 1 or greater
+    if (currentCrush >= 1)
     {
-        auto* channelData = buffer.getWritePointer (channel);
-        juce::ignoreUnused (channelData);
-        // ..do something to the data...
+        // Temporary buffers for downsampled audio
+        std::vector<float> leftDownsampled (buffer.getNumSamples() / 2);
+        std::vector<float> rightDownsampled (buffer.getNumSamples() / 2);
+
+        // Downsample
+        for (int i = 0; i < buffer.getNumSamples() / 2; ++i)
+        {
+            leftDownsampled[i] = leftChannel[i * 2];
+            if (totalNumInputChannels > 1)
+            {
+                rightDownsampled[i] = rightChannel[i * 2];
+            }
+        }
+
+        // Upsample using linear interpolation
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        {
+            float fraction = (float) (i % 2) / 2.0f;
+            int index = i / 2;
+            int nextIndex = (index + 1) % (buffer.getNumSamples() / 2);
+
+            leftChannel[i] = leftDownsampled[index] * (1 - fraction) + leftDownsampled[nextIndex] * fraction;
+            if (totalNumInputChannels > 1)
+            {
+                rightChannel[i] = rightDownsampled[index] * (1 - fraction) + rightDownsampled[nextIndex] * fraction;
+            }
+        }
+    }
+
+    // Apply bitcrushing
+    if (currentCrush >= 2)
+    {
+        int bitDepth = (currentCrush == 2) ? 12 : 10;
+        float crushFactor = pow (2.0f, bitDepth - 1);
+
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            leftChannel[sample] = round (leftChannel[sample] * crushFactor) / crushFactor;
+            if (totalNumInputChannels > 1)
+            {
+                rightChannel[sample] = round (rightChannel[sample] * crushFactor) / crushFactor;
+            }
+        }
+    }
+
+    if (totalNumInputChannels == 1)
+    {
+        // Mono input: use the same input for both channels of the reverb
+        verb_.process (leftChannel, leftChannel, buffer.getNumSamples());
+        // Copy the processed left channel to the right channel
+        memcpy (rightChannel, leftChannel, sizeof (float) * buffer.getNumSamples());
+    }
+    else
+    {
+        // Stereo input: process normally
+        verb_.process (leftChannel, rightChannel, buffer.getNumSamples());
+    }
+
+    // If we have more than 2 output channels, copy the stereo output to them
+    for (auto i = 2; i < totalNumOutputChannels; ++i)
+    {
+        buffer.copyFrom (i, 0, buffer, i % 2, 0, buffer.getNumSamples());
     }
 }
 
@@ -165,17 +253,18 @@ juce::AudioProcessorEditor* PluginProcessor::createEditor()
 //==============================================================================
 void PluginProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // You should use this method to store your parameters in the memory block.
-    // You could do that either as raw data, or use the XML or ValueTree classes
-    // as intermediaries to make it easy to save and load complex data.
-    juce::ignoreUnused (destData);
+    auto state = parameters.copyState();
+    std::unique_ptr<juce::XmlElement> xml (state.createXml());
+    copyXmlToBinary (*xml, destData);
 }
 
 void PluginProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    // You should use this method to restore your parameters from this memory block,
-    // whose contents will have been created by the getStateInformation() call.
-    juce::ignoreUnused (data, sizeInBytes);
+    std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
+
+    if (xmlState.get() != nullptr)
+        if (xmlState->hasTagName (parameters.state.getType()))
+            parameters.replaceState (juce::ValueTree::fromXml (*xmlState));
 }
 
 //==============================================================================
